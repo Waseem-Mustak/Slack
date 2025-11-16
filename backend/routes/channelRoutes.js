@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const Channel = require('../models/Channel');
+const { protect } = require('../middleware/auth');
 
 // @route   GET /api/channels
 // @desc    Get all channels (optionally filtered by teamId)
-router.get('/', async (req, res) => {
+router.get('/', protect, async (req, res) => {
   try {
     const { teamId } = req.query;
     const filter = teamId ? { teamId } : {};
@@ -28,7 +29,7 @@ router.get('/', async (req, res) => {
 
 // @route   GET /api/channels/:id
 // @desc    Get single channel
-router.get('/:id', async (req, res) => {
+router.get('/:id', protect, async (req, res) => {
   try {
     const channel = await Channel.findById(req.params.id).populate('teamId', 'name icon');
 
@@ -53,9 +54,10 @@ router.get('/:id', async (req, res) => {
 
 // @route   POST /api/channels
 // @desc    Create new channel
-router.post('/', async (req, res) => {
+router.post('/', protect, async (req, res) => {
   try {
-    const channel = await Channel.create(req.body);
+    const channelData = { ...req.body, createdBy: req.user._id };
+    const channel = await Channel.create(channelData);
 
     res.status(201).json({
       success: true,
@@ -79,7 +81,7 @@ router.post('/', async (req, res) => {
 
 // @route   PUT /api/channels/:id
 // @desc    Update channel
-router.put('/:id', async (req, res) => {
+router.put('/:id', protect, async (req, res) => {
   try {
     const channel = await Channel.findByIdAndUpdate(
       req.params.id,
@@ -111,7 +113,7 @@ router.put('/:id', async (req, res) => {
 
 // @route   DELETE /api/channels/:id
 // @desc    Delete channel
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', protect, async (req, res) => {
   try {
     const channel = await Channel.findByIdAndDelete(req.params.id);
 

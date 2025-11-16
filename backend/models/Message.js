@@ -2,19 +2,15 @@ const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema(
   {
-    username: {
-      type: String,
-      required: [true, 'Please add a username'],
-      trim: true,
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: [true, 'User ID is required'],
     },
     message: {
       type: String,
       required: [true, 'Please add a message'],
       trim: true,
-    },
-    avatar: {
-      type: String,
-      default: '',
     },
     channelId: {
       type: mongoose.Schema.Types.ObjectId,

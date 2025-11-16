@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const Team = require('../models/Team');
+const { protect } = require('../middleware/auth');
 
 // @route   GET /api/teams
 // @desc    Get all teams
-router.get('/', async (req, res) => {
+router.get('/', protect, async (req, res) => {
   try {
     const teams = await Team.find().sort({ createdAt: -1 });
     
@@ -23,7 +24,7 @@ router.get('/', async (req, res) => {
 
 // @route   GET /api/teams/:id
 // @desc    Get single team
-router.get('/:id', async (req, res) => {
+router.get('/:id', protect, async (req, res) => {
   try {
     const team = await Team.findById(req.params.id);
 
@@ -48,9 +49,10 @@ router.get('/:id', async (req, res) => {
 
 // @route   POST /api/teams
 // @desc    Create new team
-router.post('/', async (req, res) => {
+router.post('/', protect, async (req, res) => {
   try {
-    const team = await Team.create(req.body);
+    const teamData = { ...req.body, createdBy: req.user._id };
+    const team = await Team.create(teamData);
 
     res.status(201).json({
       success: true,
@@ -74,7 +76,7 @@ router.post('/', async (req, res) => {
 
 // @route   PUT /api/teams/:id
 // @desc    Update team
-router.put('/:id', async (req, res) => {
+router.put('/:id', protect, async (req, res) => {
   try {
     const team = await Team.findByIdAndUpdate(
       req.params.id,
@@ -106,7 +108,7 @@ router.put('/:id', async (req, res) => {
 
 // @route   DELETE /api/teams/:id
 // @desc    Delete team
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', protect, async (req, res) => {
   try {
     const team = await Team.findByIdAndDelete(req.params.id);
 

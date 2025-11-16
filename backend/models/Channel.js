@@ -26,7 +26,8 @@ const channelSchema = new mongoose.Schema({
     default: '#'
   },
   createdBy: {
-    type: String,
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
     required: true
   }
 }, {

@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Message = require('../models/Message');
+const { protect } = require('../middleware/auth');
 
 // @route   GET /api/messages
 // @desc    Get messages by channel (last 100)
-// @access  Public
-router.get('/', async (req, res) => {
+// @access  Private
+router.get('/', protect, async (req, res) => {
   try {
     const { channelId } = req.query;
     
@@ -17,6 +18,7 @@ router.get('/', async (req, res) => {
     }
 
     const messages = await Message.find({ channelId })
+      .populate('userId', 'username avatar')
       .sort({ createdAt: -1 })
       .limit(100);
     
@@ -35,8 +37,8 @@ router.get('/', async (req, res) => {
 
 // @route   DELETE /api/messages/:id
 // @desc    Delete a message
-// @access  Public
-router.delete('/:id', async (req, res) => {
+// @access  Private
+router.delete('/:id', protect, async (req, res) => {
   try {
     const message = await Message.findByIdAndDelete(req.params.id);
 
