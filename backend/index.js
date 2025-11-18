@@ -11,6 +11,7 @@ const channelRoutes = require('./routes/channelRoutes');
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const directMessageRoutes = require('./routes/directMessageRoutes');
+const uploadRoutes = require('./routes/uploadRoutes');
 const Message = require('./models/Message');
 const DirectMessage = require('./models/DirectMessage');
 const User = require('./models/User');
@@ -63,6 +64,7 @@ app.use('/api/teams', teamRoutes);
 app.use('/api/channels', channelRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/direct-messages', directMessageRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -144,6 +146,8 @@ io.on('connection', (socket) => {
         message: data.message,
         channelId: data.channelId,
         teamId: data.teamId,
+        imageUrl: data.imageUrl,
+        imagePublicId: data.imagePublicId,
       });
 
       // Populate user info
@@ -156,12 +160,14 @@ io.on('connection', (socket) => {
         username: newMessage.userId.username,
         avatar: newMessage.userId.avatar,
         message: newMessage.message,
+        imageUrl: newMessage.imageUrl,
+        imagePublicId: newMessage.imagePublicId,
         channelId: newMessage.channelId,
         teamId: newMessage.teamId,
         timestamp: newMessage.createdAt,
       });
 
-      console.log(`Message from ${socket.user.username} in channel ${data.channelId}: ${data.message}`);
+      console.log(`Message from ${socket.user.username} in channel ${data.channelId}${data.imageUrl ? ' (with image)' : ''}`);
     } catch (error) {
       console.error('Error saving message:', error);
       socket.emit('error', { message: 'Failed to send message' });
@@ -176,6 +182,8 @@ io.on('connection', (socket) => {
         senderId: socket.user._id,
         receiverId: data.receiverId,
         message: data.message,
+        imageUrl: data.imageUrl,
+        imagePublicId: data.imagePublicId,
       });
 
       // Populate user info
@@ -192,6 +200,8 @@ io.on('connection', (socket) => {
         receiverUsername: newDM.receiverId.username,
         receiverAvatar: newDM.receiverId.avatar,
         message: newDM.message,
+        imageUrl: newDM.imageUrl,
+        imagePublicId: newDM.imagePublicId,
         timestamp: newDM.createdAt,
         read: newDM.read,
       };
@@ -209,6 +219,49 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error saving direct message:', error);
       socket.emit('error', { message: 'Failed to send direct message' });
+    }
+  });
+
+  // Handle typing indicators for channels
+  socket.on('typing-start', (data) => {
+    if (data.channelId) {
+      // Channel typing - broadcast to channel except sender
+      socket.to(data.channelId).emit('user-typing', {
+        userId: socket.user._id,
+        username: socket.user.username,
+        channelId: data.channelId
+      });
+    } else if (data.targetUserId) {
+      // DM typing - send only to target user
+      const targetSocketId = userSockets.get(data.targetUserId.toString());
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('user-typing', {
+          userId: socket.user._id,
+          username: socket.user.username,
+          isDM: true
+        });
+      }
+    }
+  });
+
+  socket.on('typing-stop', (data) => {
+    if (data.channelId) {
+      // Channel typing - broadcast to channel except sender
+      socket.to(data.channelId).emit('user-stopped-typing', {
+        userId: socket.user._id,
+        username: socket.user.username,
+        channelId: data.channelId
+      });
+    } else if (data.targetUserId) {
+      // DM typing - send only to target user
+      const targetSocketId = userSockets.get(data.targetUserId.toString());
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('user-stopped-typing', {
+          userId: socket.user._id,
+          username: socket.user.username,
+          isDM: true
+        });
+      }
     }
   });
 

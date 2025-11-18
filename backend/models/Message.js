@@ -9,8 +9,14 @@ const messageSchema = new mongoose.Schema(
     },
     message: {
       type: String,
-      required: [true, 'Please add a message'],
       trim: true,
+    },
+    // Cloudinary image fields
+    imageUrl: {
+      type: String,  // Cloudinary URL
+    },
+    imagePublicId: {
+      type: String,  // Cloudinary public_id for deletion
     },
     channelId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -27,6 +33,15 @@ const messageSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// Custom validation: at least message or imageUrl must be provided
+messageSchema.pre('validate', function(next) {
+  if (!this.message && !this.imageUrl) {
+    next(new Error('Either message text or image is required'));
+  } else {
+    next();
+  }
+});
 
 // Index for faster queries by channel
 messageSchema.index({ channelId: 1, createdAt: -1 });

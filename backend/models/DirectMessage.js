@@ -13,8 +13,14 @@ const directMessageSchema = new mongoose.Schema({
   },
   message: {
     type: String,
-    required: true,
     trim: true
+  },
+  // Cloudinary image fields
+  imageUrl: {
+    type: String,  // Cloudinary URL
+  },
+  imagePublicId: {
+    type: String,  // Cloudinary public_id for deletion
   },
   read: {
     type: Boolean,
@@ -22,6 +28,15 @@ const directMessageSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true
+});
+
+// Custom validation: at least message or imageUrl must be provided
+directMessageSchema.pre('validate', function(next) {
+  if (!this.message && !this.imageUrl) {
+    next(new Error('Either message text or image is required'));
+  } else {
+    next();
+  }
 });
 
 // Index for faster queries
