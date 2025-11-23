@@ -12,9 +12,15 @@ const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const directMessageRoutes = require('./routes/directMessageRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 const Message = require('./models/Message');
 const DirectMessage = require('./models/DirectMessage');
 const User = require('./models/User');
+const TeamMember = require('./models/TeamMember');
+const Channel = require('./models/Channel');
+const ChannelRead = require('./models/ChannelRead');
+const DMRead = require('./models/DMRead');
+const Notification = require('./models/Notification');
 
 // Load environment variables
 dotenv.config();
@@ -65,6 +71,7 @@ app.use('/api/channels', channelRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/direct-messages', directMessageRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -112,12 +119,113 @@ io.on('connection', (socket) => {
 
   // Store user's socket ID
   userSockets.set(socket.user._id.toString(), socket.id);
+  
+  // Initialize socket data for tracking current view
+  socket.data.currentChannelId = null;
+  socket.data.currentDMUserId = null;
 
   // Broadcast to all users that this user is online
   io.emit('user-status-changed', {
     userId: socket.user._id,
     username: socket.user.username,
     status: 'online'
+  });
+
+  // Track when user views a channel
+  socket.on('view-channel', (channelId) => {
+    socket.data.currentChannelId = channelId;
+    socket.data.currentDMUserId = null;
+    console.log(`${socket.user.username} viewing channel: ${channelId}`);
+  });
+
+  // Track when user views a DM
+  socket.on('view-dm', (userId) => {
+    socket.data.currentDMUserId = userId;
+    socket.data.currentChannelId = null;
+    console.log(`${socket.user.username} viewing DM with user: ${userId}`);
+  });
+
+  // Mark channel as read
+  socket.on('mark-channel-read', async (channelId) => {
+    try {
+      await ChannelRead.findOneAndUpdate(
+        { userId: socket.user._id, channelId },
+        { lastReadAt: new Date() },
+        { upsert: true, new: true }
+      );
+      
+      // Get updated unread count
+      const unreadCount = await getChannelUnreadCount(socket.user._id, channelId);
+      socket.emit('unread-updated', { type: 'channel', channelId, count: unreadCount });
+    } catch (error) {
+      console.error('Error marking channel as read:', error);
+    }
+  });
+
+  // Mark DM as read
+  socket.on('mark-dm-read', async (otherUserId) => {
+    try {
+      await DMRead.findOneAndUpdate(
+        { userId: socket.user._id, otherUserId },
+        { lastReadAt: new Date() },
+        { upsert: true, new: true }
+      );
+      
+      // Get updated unread count
+      const unreadCount = await getDMUnreadCount(socket.user._id, otherUserId);
+      socket.emit('unread-updated', { type: 'dm', userId: otherUserId, count: unreadCount });
+    } catch (error) {
+      console.error('Error marking DM as read:', error);
+    }
+  });
+
+  // Get all unread counts
+  socket.on('get-unread-counts', async () => {
+    try {
+      // Get all channels user is member of
+      const memberships = await TeamMember.find({ userId: socket.user._id });
+      const teamIds = memberships.map(m => m.teamId);
+      const channels = await Channel.find({ teamId: { $in: teamIds } });
+      
+      // Get unread count for each channel
+      const channelUnreads = await Promise.all(
+        channels.map(async (channel) => ({
+          channelId: channel._id,
+          count: await getChannelUnreadCount(socket.user._id, channel._id)
+        }))
+      );
+      
+      // Get all users with DMs
+      const dmUsers = await DirectMessage.distinct('senderId', {
+        $or: [
+          { senderId: socket.user._id },
+          { receiverId: socket.user._id }
+        ]
+      });
+      const dmUsers2 = await DirectMessage.distinct('receiverId', {
+        $or: [
+          { senderId: socket.user._id },
+          { receiverId: socket.user._id }
+        ]
+      });
+      const allDMUserIds = [...new Set([...dmUsers, ...dmUsers2])]
+        .filter(id => id.toString() !== socket.user._id.toString());
+      
+      // Get unread count for each DM
+      const dmUnreads = await Promise.all(
+        allDMUserIds.map(async (userId) => ({
+          userId,
+          count: await getDMUnreadCount(socket.user._id, userId)
+        }))
+      );
+      
+      socket.emit('all-unread-counts', {
+        channels: channelUnreads.filter(c => c.count > 0),
+        dms: dmUnreads.filter(d => d.count > 0)
+      });
+    } catch (error) {
+      console.error('Error getting unread counts:', error);
+    }
   });
 
   // Join a channel room
@@ -140,6 +248,23 @@ io.on('connection', (socket) => {
   // Listen for incoming messages
   socket.on('send-message', async (data) => {
     try {
+      // Check if user is member of the team
+      const channel = await Channel.findById(data.channelId);
+      if (!channel) {
+        socket.emit('error', { message: 'Channel not found' });
+        return;
+      }
+
+      const membership = await TeamMember.findOne({
+        teamId: channel.teamId,
+        userId: socket.user._id
+      });
+
+      if (!membership) {
+        socket.emit('error', { message: 'You are not a member of this team' });
+        return;
+      }
+
       // Save message to MongoDB with authenticated user
       const newMessage = await Message.create({
         userId: socket.user._id,
@@ -153,8 +278,7 @@ io.on('connection', (socket) => {
       // Populate user info
       await newMessage.populate('userId', 'username avatar');
 
-      // Broadcast message only to users in the same channel
-      io.to(data.channelId).emit('receive-message', {
+      const messageData = {
         _id: newMessage._id,
         userId: newMessage.userId._id,
         username: newMessage.userId.username,
@@ -165,9 +289,76 @@ io.on('connection', (socket) => {
         channelId: newMessage.channelId,
         teamId: newMessage.teamId,
         timestamp: newMessage.createdAt,
-      });
+      };
 
-      console.log(`Message from ${socket.user.username} in channel ${data.channelId}${data.imageUrl ? ' (with image)' : ''}`);
+      // Detect @mentions
+      const mentionRegex = /@(\w+)/g;
+      const mentions = [...data.message.matchAll(mentionRegex)].map(match => match[1]);
+      const mentionedUsers = mentions.length > 0 
+        ? await User.find({ username: { $in: mentions } }).select('_id username')
+        : [];
+
+      // Get all team members
+      const teamMembers = await TeamMember.find({ teamId: channel.teamId });
+
+      // Send to each team member with appropriate notification
+      for (const member of teamMembers) {
+        const memberSocketId = userSockets.get(member.userId.toString());
+        
+        if (memberSocketId) {
+          const memberSocket = io.sockets.sockets.get(memberSocketId);
+          
+          if (memberSocket) {
+            // Always send the message
+            memberSocket.emit('receive-message', messageData);
+            
+            // Check if member is viewing this channel
+            const isViewingChannel = memberSocket.data.currentChannelId === data.channelId;
+            
+            // Don't notify sender or if viewing the channel
+            if (member.userId.toString() !== socket.user._id.toString() && !isViewingChannel) {
+              // Check if user was mentioned
+              const wasMentioned = mentionedUsers.some(u => u._id.toString() === member.userId.toString());
+              
+              // Get unread count
+              const unreadCount = await getChannelUnreadCount(member.userId, data.channelId);
+              
+              const notificationType = wasMentioned ? 'mention' : 'message';
+              const notificationTitle = wasMentioned 
+                ? `${socket.user.username} mentioned you` 
+                : `New message in #${channel.name}`;
+              
+              console.log(`[NOTIFICATION DEBUG] User ${member.userId} - wasMentioned: ${wasMentioned}, type: ${notificationType}`);
+              
+              // Save notification to database
+              await Notification.create({
+                userId: member.userId,
+                type: notificationType,
+                title: notificationTitle,
+                message: data.message,
+                channelId: data.channelId,
+                channelName: channel.name,
+                fromUserId: socket.user._id,
+                fromUsername: socket.user.username,
+                read: false
+              });
+              
+              // Send notification
+              memberSocket.emit('notification', {
+                type: notificationType,
+                channelId: data.channelId,
+                channelName: channel.name,
+                teamId: data.teamId,
+                message: messageData,
+                unreadCount,
+                priority: wasMentioned ? 'high' : 'normal'
+              });
+            }
+          }
+        }
+      }
+
+      console.log(`Message from ${socket.user.username} in channel ${data.channelId}${data.imageUrl ? ' (with image)' : ''}${mentions.length > 0 ? ' (with mentions)' : ''}`);
     } catch (error) {
       console.error('Error saving message:', error);
       socket.emit('error', { message: 'Failed to send message' });
@@ -209,7 +400,39 @@ io.on('connection', (socket) => {
       // Send to receiver using stored socket ID
       const receiverSocketId = userSockets.get(data.receiverId.toString());
       if (receiverSocketId) {
-        io.to(receiverSocketId).emit('receive-dm', dmData);
+        const receiverSocket = io.sockets.sockets.get(receiverSocketId);
+        
+        if (receiverSocket) {
+          receiverSocket.emit('receive-dm', dmData);
+          
+          // Check if receiver is viewing this DM
+          const isViewingDM = receiverSocket.data.currentDMUserId === socket.user._id.toString();
+          
+          // Send notification if not viewing
+          if (!isViewingDM) {
+            const unreadCount = await getDMUnreadCount(data.receiverId, socket.user._id);
+            
+            // Save notification to database
+            await Notification.create({
+              userId: data.receiverId,
+              type: 'dm',
+              title: `New message from ${socket.user.username}`,
+              message: data.message,
+              fromUserId: socket.user._id,
+              fromUsername: socket.user.username,
+              read: false
+            });
+            
+            receiverSocket.emit('dm-notification', {
+              type: 'direct-message',
+              from: socket.user.username,
+              fromId: socket.user._id,
+              message: dmData,
+              unreadCount,
+              priority: 'high' // DMs are always high priority
+            });
+          }
+        }
       }
       
       // Send back to sender
@@ -291,6 +514,43 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+// Helper functions for unread counts
+async function getChannelUnreadCount(userId, channelId) {
+  try {
+    const channelRead = await ChannelRead.findOne({ userId, channelId });
+    const lastReadAt = channelRead?.lastReadAt || new Date(0);
+    
+    const count = await Message.countDocuments({
+      channelId,
+      createdAt: { $gt: lastReadAt },
+      userId: { $ne: userId } // Don't count user's own messages
+    });
+    
+    return count;
+  } catch (error) {
+    console.error('Error getting channel unread count:', error);
+    return 0;
+  }
+}
+
+async function getDMUnreadCount(userId, otherUserId) {
+  try {
+    const dmRead = await DMRead.findOne({ userId, otherUserId });
+    const lastReadAt = dmRead?.lastReadAt || new Date(0);
+    
+    const count = await DirectMessage.countDocuments({
+      senderId: otherUserId,
+      receiverId: userId,
+      createdAt: { $gt: lastReadAt }
+    });
+    
+    return count;
+  } catch (error) {
+    console.error('Error getting DM unread count:', error);
+    return 0;
+  }
+}
 
 // Start server
 const PORT = process.env.PORT || 5000;

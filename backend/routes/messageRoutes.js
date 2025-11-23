@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Message = require('../models/Message');
+const Channel = require('../models/Channel');
+const TeamMember = require('../models/TeamMember');
 const { protect } = require('../middleware/auth');
 
 // @route   GET /api/messages
-// @desc    Get messages by channel (last 100)
+// @desc    Get messages by channel (last 100) - only for team members
 // @access  Private
 router.get('/', protect, async (req, res) => {
   try {
@@ -14,6 +16,27 @@ router.get('/', protect, async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Channel ID is required',
+      });
+    }
+
+    // Get channel and check team membership
+    const channel = await Channel.findById(channelId);
+    if (!channel) {
+      return res.status(404).json({
+        success: false,
+        error: 'Channel not found',
+      });
+    }
+
+    const membership = await TeamMember.findOne({
+      teamId: channel.teamId,
+      userId: req.user._id
+    });
+
+    if (!membership) {
+      return res.status(403).json({
+        success: false,
+        error: 'You are not a member of this team',
       });
     }
 
